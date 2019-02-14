@@ -1,0 +1,125 @@
+# -*- coding: utf-8 -*-
+
+import paramiko
+import MySQLdb
+
+
+class ConfigPort(object):
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def connect_ssh(self, host, port, user, pwd):
+        """远程连接服务器"""
+        transport = paramiko.Transport(host, port)
+        transport.connect(username=user, password=pwd)
+        ssh = paramiko.SSHClient()
+        ssh._transport = transport
+        return ssh
+
+    @staticmethod
+    def connect_database(self, host, user, pwd, db, sql):
+        """连接数据库"""
+        conn = MySQLdb.connect(host=host, user=user, passwd=pwd, db=db, charset="utf8")
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        return cursor.fetchall()
+
+    def get_arm_ip(self, ip):
+        """取ip"""
+        try:
+            ssh = ConfigPort().connect_ssh(self, ip, 22, "watcher", "password")
+            query_ip = 'select ip from t_ip;'
+            ip_list = ConfigPort().connect_database(self, ip, "root", "jxt", "table", query_ip)
+        except Exception as err:
+            return err
+        finally:
+            ssh.close()
+        return ip_list
+
+    def get_port_config(self, ip):
+        query_port = 'sql语句;'
+        try:
+            ssh = ConfigPort().connect_ssh(self, ip, 22, "watcher", "password")
+        except Exception as err:
+            print "----- arm connection fail ------"
+            return err
+        finally:
+            ssh.close()
+        try:
+            result = ConfigPort().connect_database(self, ip, "root", "jxt", "table", query_port)
+        except Exception as err:
+            print "----- database connection fail -------"
+            return err
+        return result
+
+    def execution_config(self):
+        """修改配置文件"""
+        database_ip = "172.16.205.150"
+        ip_list = ConfigPort().get_arm_ip(database_ip)
+        for ip in ip_list:
+            try:
+                ssh = ConfigPort().connect_ssh(self, ip[0], 22, "watcher", "password")
+                sftp_client = ssh.open_sftp()
+                fr = sftp_client.open("/home/watcher/local/ri.conf", "r")
+                # 获取本地ip
+                '''
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(('8.8.8.8', 80))
+                local_ip = s.getsockname()[0]
+                '''
+                count = 0
+                inserts = []
+                # 修改ri文件
+                try:
+                    lines = fr.readlines()
+                    result = ConfigPort().get_port_config(database_ip)
+                    for num, value in enumerate(lines):
+                        inserts.append(value)
+                        if "bindadress" in value:
+                            for info in result:
+                                count += 1
+                                if info[0] == ip[0]:
+                                    continue
+                                inserts.append("0.0.0.0" + " " + info[1] + "     " + info[0] + "     " + info[1] + "\n")
+                                infos = "".join(inserts)
+                            f = sftp_client.open("/home/watcher/local/ri.conf", "w")
+                            f.write(infos)
+                            break
+                except Exception as err:
+                    print err
+                finally:
+                    f.close()
+                    fr.close()
+
+                # 修改my文件
+                try:
+                    frb = sftp_client.open("/home/watcher/local/my.conf", "r")
+                    boa_file = frb.readlines()
+                    # local_ip = os.popen(
+                    #    "ifconfig | grep 'inet addr:' | grep -v '127.0.0.1' | cut -d: -f2 | awk
+                    #    '{print $1}' | head -1").read()
+                    for info in boa_file:
+                        if info.find("Port") >= 0:
+                            boa_file.remove(info)
+                            for port in result:
+                                if port[0] == ip[0]:
+                                    boa_file.insert(0, "Port" + " " + port[1] + "\n")
+                                    ss = "".join(boa_file)
+                    fw = sftp_client.open("/home/watcher/local/my.conf", "w")
+                    fw.write(ss)
+                except Exception as err:
+                    return err
+                finally:
+                    fw.close()
+                    frb.close()
+            except Exception as err:
+                print "----- arm connection fail ------"
+                return err
+            finally:
+                ssh.close()
+
+
+if __name__ == "__main__":
+    t = ConfigPort()
+    t.execution_config()
